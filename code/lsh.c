@@ -26,6 +26,9 @@
 
 // The <unistd.h> header is your gateway to the OS's process management facilities.
 #include <unistd.h>
+#include <signal.h>
+#include <sys/wait.h>
+#include <errno.h>
 
 #include "parse.h"
 
@@ -33,12 +36,76 @@ static void print_cmd(Command *cmd);
 static void print_pgm(Pgm *p);
 void stripwhite(char *);
 
+/*
+ * Signal handling and process-reaping utilities
+ */
+static volatile sig_atomic_t current_foreground_pgid = -1;
+
+static void on_sigint(int signo)
+{
+  (void)signo;
+
+  if (current_foreground_pgid > 0)
+  {
+    kill(-current_foreground_pgid, SIGINT);
+  }
+  else
+  {
+    const char nl = '\n';
+    (void)!write(STDOUT_FILENO, &nl, 1);
+  }
+}
+
+static void on_sigchld(int signo)
+{
+  (void)signo;
+  int status;
+  pid_t pid;
+
+  for (;;)
+  {
+    pid = waitpid(-1, &status, WNOHANG);
+    if (pid <= 0)
+    {
+      if (pid == 0 || (pid == -1 && errno == ECHILD))
+      {
+        break;
+      }
+      break;
+    }
+  }
+}
+
+static void install_signal_handlers(void)
+{
+  struct sigaction sa_int;
+  memset(&sa_int, 0, sizeof(sa_int));
+  sa_int.sa_handler = on_sigint;
+  sigemptyset(&sa_int.sa_mask);
+  sa_int.sa_flags = SA_RESTART;
+  (void)sigaction(SIGINT, &sa_int, NULL);
+
+  struct sigaction sa_chld;
+  memset(&sa_chld, 0, sizeof(sa_chld));
+  sa_chld.sa_handler = on_sigchld;
+  sigemptyset(&sa_chld.sa_mask);
+  sa_chld.sa_flags = SA_RESTART | SA_NOCLDSTOP;
+  (void)sigaction(SIGCHLD, &sa_chld, NULL);
+}
+
 int main(void)
 {
+  install_signal_handlers();
   for (;;)
   {
     char *line;
     line = readline("> ");
+
+    /* Handle Ctrl-D (EOF) gracefully: exit the shell loop */
+    if (line == NULL)
+    {
+      break;
+    }
 
     // Remove leading and trailing whitespace from the line
     stripwhite(line);
