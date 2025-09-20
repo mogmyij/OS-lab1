@@ -12,3 +12,9 @@ typedef struct j
 } Job;
 
 extern int commandExecutor(Command);
+extern Job execForeground(Command cmd);
+extern Job execBackground(Command cmd);
+extern pid_t forkAndExec(Pgm *program, int readFd, int writeFd) ;
+extern Job connectPipe(Command cmd);
+extern void execBuiltin(Command cmd);
+extern int isBuiltin(Command cmd);

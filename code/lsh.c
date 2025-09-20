@@ -53,8 +53,6 @@ int main(void)
       Command cmd;
       if (parse(line, &cmd) == 1)
       {
-        // Just prints cmd
-        print_cmd(&cmd);
         Pgm *p = cmd.pgm;
 
         commandExecutor(cmd);
