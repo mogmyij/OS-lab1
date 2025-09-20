@@ -28,10 +28,12 @@
 #include <unistd.h>
 
 #include "parse.h"
+#include "exec.h"
 
 static void print_cmd(Command *cmd);
 static void print_pgm(Pgm *p);
 void stripwhite(char *);
+char* PATH;
 
 int main(void)
 {
@@ -53,6 +55,9 @@ int main(void)
       {
         // Just prints cmd
         print_cmd(&cmd);
+        Pgm *p = cmd.pgm;
+
+        commandExecutor(cmd);
       }
       else
       {
