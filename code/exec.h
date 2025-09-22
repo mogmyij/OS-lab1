@@ -18,3 +18,5 @@ extern pid_t forkAndExec(Pgm *program, int readFd, int writeFd) ;
 extern Job connectPipe(Command cmd);
 extern void execBuiltin(Command cmd);
 extern int isBuiltin(Command cmd);
+
+void set_current_foreground_pgid(pid_t pgid);

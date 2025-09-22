@@ -29,6 +29,7 @@
 #include <signal.h>
 #include <sys/wait.h>
 #include <errno.h>
+#include <termios.h>
 
 #include "parse.h"
 #include "exec.h"
@@ -42,6 +43,11 @@ char* PATH;
  * Signal handling and process-reaping utilities
  */
 static volatile sig_atomic_t current_foreground_pgid = -1;
+
+void set_current_foreground_pgid(pid_t pgid)
+{
+  current_foreground_pgid = pgid;
+}
 
 static void on_sigint(int signo)
 {
@@ -93,17 +99,29 @@ static void install_signal_handlers(void)
   sigemptyset(&sa_chld.sa_mask);
   sa_chld.sa_flags = SA_RESTART | SA_NOCLDSTOP;
   (void)sigaction(SIGCHLD, &sa_chld, NULL);
+
+  // Ignore job-control signals
+  (void)signal(SIGTTOU, SIG_IGN);
+  (void)signal(SIGTTIN, SIG_IGN);
+  (void)signal(SIGTSTP, SIG_IGN);
 }
+
+extern int rl_catch_signals;
 
 int main(void)
 {
   install_signal_handlers();
+  //Make shell its own process group and take terminal control
+  (void)setpgid(0, 0);
+  (void)tcsetpgrp(STDIN_FILENO, getpgrp());
+
+  rl_catch_signals = 0;
   for (;;)
   {
     char *line;
     line = readline("> ");
 
-    /* Handle Ctrl-D (EOF) gracefully: exit the shell loop */
+    // Handle Ctrl-D (EOF): exit the shell loop
     if (line == NULL)
     {
       break;

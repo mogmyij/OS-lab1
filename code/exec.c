@@ -5,9 +5,14 @@
 #include <stdio.h>
 #include <unistd.h>
 #include <sys/wait.h>
+#include <signal.h>
+#include <termios.h>
+#include <errno.h>
 
 #include "exec.h"
 #include "parse.h"
+
+void set_current_foreground_pgid(pid_t pgid);
 
 int commandExecutor(Command cmd){
 
@@ -46,10 +51,28 @@ Job execForeground(Command cmd){
     if (pid == -1){
 
     } else {
-      waitpid(pid, NULL, 0);
+      //Put child into its own process group
+      (void)setpgid(pid, pid);
+      (void)tcsetpgrp(STDIN_FILENO, pid);
+      set_current_foreground_pgid(pid);
+
+      int status = 0;
+      for (;;) {
+        if (waitpid(pid, &status, 0) == -1) {
+          if (errno == EINTR) {
+            continue;
+          }
+          break;
+        }
+        break;
+      }
+
+      // Restore terminal to the shell
+      (void)tcsetpgrp(STDIN_FILENO, getpgrp());
+      set_current_foreground_pgid(-1);
       j.pid = pid;
       j.groupPid = pid;
-      j.status = 0;
+      j.status = status;
     }
     return j;
   } else {
@@ -88,8 +111,15 @@ pid_t forkAndExec(Pgm *program, int readFd, int writeFd) {
     perror("Fork failed");
     return -1;
   } else if (pid == 0) { //child
+    // Child: create its own process group
+    (void)setpgid(0, 0);
+    // Default SIGINT handling so Ctrl-C terminates the child
+    (void)signal(SIGINT, SIG_DFL);
+    (void)signal(SIGTSTP, SIG_DFL);
+
     execvp(program->pgmlist[0], program->pgmlist);
     perror("execvp failed"); // will only run this when execvp fails
+    _exit(127);
   } else { //parent does not wait because it depends on what the caller wants to do
     return pid;
   }
