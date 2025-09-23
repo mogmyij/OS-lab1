@@ -24,7 +24,7 @@ int commandExecutor(Command cmd){
 
   } else {
 
-    Job job = execForeground(cmd);//is not a background commandExecutor
+    Job job = execForeground(cmd);//is not a background command
 
     if (job.status != -1){ //check if executed successfuly
       return 1;
