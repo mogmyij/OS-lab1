@@ -8,6 +8,8 @@
 #include <signal.h>
 #include <termios.h>
 #include <errno.h>
+#include <fcntl.h>
+#include <sys/stat.h>
 
 #include "exec.h"
 #include "parse.h"
@@ -46,10 +48,48 @@ Job execForeground(Command cmd){
 
   //since next is NULL it means that there is only 1 program hence no pipe
   if (programList->next == NULL){ 
-    pid_t pid = forkAndExec(programList, -1, -1);
+    // Open redirection files if specified and prepare FDs for the child
+    int inFd = -1;
+    int outFd = -1;
+
+    if (cmd.rstdin != NULL){
+      inFd = open(cmd.rstdin, O_RDONLY);
+      if (inFd == -1){
+        perror("open rstdin failed");
+        j.pid = -1;
+        j.groupPid = -1;
+        j.status = -1;
+        return j;
+      }
+    }
+
+    if (cmd.rstdout != NULL){
+      outFd = open(cmd.rstdout, O_WRONLY | O_CREAT | O_TRUNC, 0666);
+      if (outFd == -1){
+        if (inFd != -1){
+          (void)close(inFd);
+        }
+        perror("open rstdout failed");
+        j.pid = -1;
+        j.groupPid = -1;
+        j.status = -1;
+        return j;
+      }
+    }
+
+    pid_t pid = forkAndExec(programList, inFd, outFd);
+    // Parent closes its copy of any redirection FDs to avoid descriptor leaks
+    if (inFd != -1){
+      (void)close(inFd);
+    }
+    if (outFd != -1){
+      (void)close(outFd);
+    }
 
     if (pid == -1){
-
+      j.pid = -1;
+      j.groupPid = -1;
+      j.status = -1;
     } else {
       //Put child into its own process group
       (void)setpgid(pid, pid);
@@ -116,6 +156,23 @@ pid_t forkAndExec(Pgm *program, int readFd, int writeFd) {
     // Default SIGINT handling so Ctrl-C terminates the child
     (void)signal(SIGINT, SIG_DFL);
     (void)signal(SIGTSTP, SIG_DFL);
+
+    // Child: wire provided FDs to STDIN/STDOUT using dup2 when present
+    if (readFd != -1){
+      if (dup2(readFd, STDIN_FILENO) == -1){
+        perror("dup2 stdin failed");
+        _exit(126);
+      }
+      (void)close(readFd);
+    }
+
+    if (writeFd != -1){
+      if (dup2(writeFd, STDOUT_FILENO) == -1){
+        perror("dup2 stdout failed");
+        _exit(126);
+      }
+      (void)close(writeFd);
+    }
 
     execvp(program->pgmlist[0], program->pgmlist);
     perror("execvp failed"); // will only run this when execvp fails
