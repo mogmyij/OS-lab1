@@ -21,7 +21,7 @@ int commandExecutor(Command cmd){
   //determine which helper function to call 
 
   if (isBuiltin(cmd)) {//is a buiilt-in command
-  
+
   } else if (cmd.background){//is a background command
 
   } else {
@@ -34,7 +34,7 @@ int commandExecutor(Command cmd){
       return -1;
     }
   }
-  
+
 
 }
 
@@ -117,6 +117,30 @@ Job execForeground(Command cmd){
     return j;
   } else {
     j = connectPipe(cmd);
+    pid_t job_id = j.groupPid;
+
+    //hand foreground control to pipe
+    (void)tcsetpgrp(STDIN_FILENO, job_id);
+    set_current_foreground_pgid(job_id);
+    int status = 0;
+    for (;;) { //since it is foreground wait for the group to terminate
+      if (waitpid(-job_id, &status, 0) == -1) {
+        if (errno == EINTR) {
+          continue;
+        } else if (errno == ECHILD) { //break only when there are no more children in the group
+          break;
+        } else {
+          perror("Pipe group wait error");
+          break;
+        }
+      }
+    }
+
+    // Restore terminal to the shell
+    (void)tcsetpgrp(STDIN_FILENO, getpgrp());
+    set_current_foreground_pgid(-1);
+    j.status = status;
+
     return j;
   }
 }
@@ -136,7 +160,7 @@ Job execBackground(Command cmd){
  * readFd: contains the file descriptors to redirect stdin to
  *         use -1 when there is no need to redirect stdin/stdout
  * writeFd:contains the file descriptors to redirect stdout to
- *         use -1 when there is no need to redirect stdin/stdout
+ *         use -1 when there is no need to redirect stdin/STDOUT
  *
  * Return value:
  * returns pid of the child and -1 if failed
@@ -151,8 +175,9 @@ pid_t forkAndExec(Pgm *program, int readFd, int writeFd) {
     perror("Fork failed");
     return -1;
   } else if (pid == 0) { //child
-    // Child: create its own process group
-    (void)setpgid(0, 0);
+    // dont let child manage its process group it creates race conditon in pipes
+    //(void)setpgid(0, 0); 
+
     // Default SIGINT handling so Ctrl-C terminates the child
     (void)signal(SIGINT, SIG_DFL);
     (void)signal(SIGTSTP, SIG_DFL);
@@ -186,7 +211,84 @@ pid_t forkAndExec(Pgm *program, int readFd, int writeFd) {
  * connects programs together into a pipe and groups their pid into a process group
  */
 Job connectPipe(Command cmd){
+  Pgm *currPgm = cmd.pgm;
+  Pgm *prevPgm = NULL;
+  Job j;
+  int currPipefd[2], prevPipefd[2];
+  pid_t pgid = -1;
+  pid_t pid;
 
+  // setup the head and tail of the pipe
+  int headIn = -1;
+  int tailOut = -1;
+  if (cmd.rstdin != NULL){
+    headIn = open(cmd.rstdin, O_RDONLY);
+    if (headIn == -1){
+      perror("open rstdin failed");
+      j.pid = -1;
+      j.groupPid = -1;
+      j.status = -1;
+      return j;
+    }
+  }
+
+  if (cmd.rstdout != NULL){
+    tailOut = open(cmd.rstdout, O_WRONLY | O_CREAT | O_TRUNC, 0666);
+    if (tailOut == -1){
+      if (headIn != -1){
+        (void)close(headIn);
+      }
+      perror("open rstdout failed");
+      j.pid = -1;
+      j.groupPid = -1;
+      j.status = -1;
+      return j;
+    }
+  }
+
+  while (currPgm != NULL) { //loops through the pipe from the last to the first program
+    if (currPgm->next != NULL) { //do not create pipe for the first program in the pipe
+      if(pipe(currPipefd) == -1){
+        perror("pipe failed");
+        j.pid = -1;
+        j.groupPid = -1;
+        j.status = -1;
+        return j;
+      }
+
+      fcntl(currPipefd[0], F_SETFD, FD_CLOEXEC);//closes fd upon execvp
+      fcntl(currPipefd[1], F_SETFD, FD_CLOEXEC);
+    } 
+
+    if (prevPgm == NULL) { //last program in the pipe
+      //makes pgid the pid of the last program in the pipe
+      pid = forkAndExec(currPgm, currPipefd[0], tailOut); 
+    } else if (currPgm->next == NULL) { //first program in the pipe
+      pid = forkAndExec(currPgm, headIn, prevPipefd[1]);
+    }
+    else {
+      pid = forkAndExec(currPgm, currPipefd[0], prevPipefd[1]);
+    }
+
+    if (pgid == -1) {// whatever pid is here becomes the new leader
+      pgid = pid;
+    }
+    setpgid(pid, pgid);
+
+    //iterrate to the next program and pipe
+    if (prevPgm != NULL) {
+      close(prevPipefd[0]),close(prevPipefd[1]); //close previous pipes in the parent
+    }
+    prevPipefd[0] = currPipefd[0], prevPipefd[1] = currPipefd[1]; 
+    prevPgm = currPgm;
+    currPgm = currPgm->next;
+  }
+  // close the redirects
+  if (headIn != -1)  close(headIn); 
+  if (tailOut != -1)  close(tailOut); 
+
+  j.groupPid = pgid;
+  return j;
 }
 
 //returns void because built in commands do not fork and excec hence no jobs created
