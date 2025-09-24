@@ -37,7 +37,7 @@
 static void print_cmd(Command *cmd);
 static void print_pgm(Pgm *p);
 void stripwhite(char *);
-char* PATH;
+char *PATH;
 
 /*
  * Signal handling and process-reaping utilities
@@ -111,15 +111,32 @@ extern int rl_catch_signals;
 int main(void)
 {
   install_signal_handlers();
-  //Make shell its own process group and take terminal control
+  // Make shell its own process group and take terminal control
   (void)setpgid(0, 0);
-  (void)tcsetpgrp(STDIN_FILENO, getpgrp());
+  if (isatty(STDIN_FILENO))
+  {
+    (void)tcsetpgrp(STDIN_FILENO, getpgrp());
+  }
 
   rl_catch_signals = 0;
+  const int interactive = isatty(STDIN_FILENO);
   for (;;)
   {
-    char *line;
-    line = readline("> ");
+    char *line = NULL;
+    if (interactive)
+    {
+      line = readline("> ");
+    }
+    else
+    {
+      size_t cap = 0;
+      ssize_t r = getline(&line, &cap, stdin);
+      if (r == -1)
+      {
+        free(line);
+        line = NULL;
+      }
+    }
 
     // Handle Ctrl-D (EOF): exit the shell loop
     if (line == NULL)
@@ -133,12 +150,15 @@ int main(void)
     // If stripped line not blank
     if (*line)
     {
-      add_history(line);
+      if (interactive)
+      {
+        add_history(line);
+      }
 
       Command cmd;
       if (parse(line, &cmd) == 1)
       {
-        Pgm *p = cmd.pgm;
+        // Pgm *p = cmd.pgm; Testig something
 
         commandExecutor(cmd);
       }
@@ -198,7 +218,6 @@ static void print_pgm(Pgm *p)
     printf("]\n");
   }
 }
-
 
 /* Strip whitespace from the start and end of a string.
  *
