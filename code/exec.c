@@ -10,51 +10,77 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <sys/stat.h>
+#include <limits.h>
+#include <stdlib.h>
+#include <string.h>
 
 #include "exec.h"
 #include "parse.h"
 
+extern int g_shell_tty;
+extern pid_t g_shell_pgid;
+extern volatile sig_atomic_t g_fg_pgid;
+
+// Helper functions
+static inline char **first_argv(Command *cmd)
+{
+  return (cmd && cmd->pgm && cmd->pgm->pgmlist) ? cmd->pgm->pgmlist : NULL;
+}
+static inline int has_pipeline(Command *cmd)
+{
+  return (cmd && cmd->pgm && cmd->pgm->next);
+}
+static inline int job_to_int(Job j)
+{
+  return (j.status != -1) ? 1 : -1;
+}
+
 void set_current_foreground_pgid(pid_t pgid);
 
-int commandExecutor(Command cmd){
+int commandExecutor(Command cmd)
+{
 
-  //determine which helper function to call 
+  // determine which helper function to call
 
-  if (isBuiltin(cmd)) {//is a buiilt-in command
-
-  } else if (cmd.background){//is a background command
-
-  } else {
-
-    Job job = execForeground(cmd);//is not a background command
-
-    if (job.status != -1){ //check if executed successfuly
-      return 1;
-    } else {
-      return -1;
-    }
+  if (isBuiltin(cmd))
+  { // is a buiilt-in command
+    execBuiltin(cmd);
+    return 0;
   }
-
+  else if (cmd.background)
+  { // is a background command
+    Job j = execBackground(cmd);
+    return job_to_int(j);
+  }
+  else
+  {
+    Job job = execForeground(cmd); // is not a background command
+    return job_to_int(job);
+  }
 
 }
 
 /*
  * execute and wait for program(s) to terminate
  */
-Job execForeground(Command cmd){
-  // loop through each program in the command and run them 
+Job execForeground(Command cmd)
+{
+  // loop through each program in the command and run them
   Pgm *programList = cmd.pgm;
   Job j;
 
-  //since next is NULL it means that there is only 1 program hence no pipe
-  if (programList->next == NULL){ 
+  // since next is NULL it means that there is only 1 program hence no pipe
+  if (programList->next == NULL)
+  {
     // Open redirection files if specified and prepare FDs for the child
     int inFd = -1;
     int outFd = -1;
 
-    if (cmd.rstdin != NULL){
+    if (cmd.rstdin != NULL)
+    {
       inFd = open(cmd.rstdin, O_RDONLY);
-      if (inFd == -1){
+      if (inFd == -1)
+      {
         perror("open rstdin failed");
         j.pid = -1;
         j.groupPid = -1;
@@ -63,10 +89,13 @@ Job execForeground(Command cmd){
       }
     }
 
-    if (cmd.rstdout != NULL){
+    if (cmd.rstdout != NULL)
+    {
       outFd = open(cmd.rstdout, O_WRONLY | O_CREAT | O_TRUNC, 0666);
-      if (outFd == -1){
-        if (inFd != -1){
+      if (outFd == -1)
+      {
+        if (inFd != -1)
+        {
           (void)close(inFd);
         }
         perror("open rstdout failed");
@@ -79,27 +108,35 @@ Job execForeground(Command cmd){
 
     pid_t pid = forkAndExec(programList, inFd, outFd);
     // Parent closes its copy of any redirection FDs to avoid descriptor leaks
-    if (inFd != -1){
+    if (inFd != -1)
+    {
       (void)close(inFd);
     }
-    if (outFd != -1){
+    if (outFd != -1)
+    {
       (void)close(outFd);
     }
 
-    if (pid == -1){
+    if (pid == -1)
+    {
       j.pid = -1;
       j.groupPid = -1;
       j.status = -1;
-    } else {
-      //Put child into its own process group
+    }
+    else
+    {
+      // Put child into its own process group
       (void)setpgid(pid, pid);
       (void)tcsetpgrp(STDIN_FILENO, pid);
       set_current_foreground_pgid(pid);
 
       int status = 0;
-      for (;;) {
-        if (waitpid(pid, &status, 0) == -1) {
-          if (errno == EINTR) {
+      for (;;)
+      {
+        if (waitpid(pid, &status, 0) == -1)
+        {
+          if (errno == EINTR)
+          {
             continue;
           }
           break;
@@ -115,7 +152,9 @@ Job execForeground(Command cmd){
       j.status = status;
     }
     return j;
-  } else {
+  }
+  else
+  {
     j = connectPipe(cmd);
     pid_t job_id = j.groupPid;
 
@@ -148,12 +187,68 @@ Job execForeground(Command cmd){
 /*
  * execute and pass Job to jobList to handle and terminate without leaving zombies
  */
-Job execBackground(Command cmd){
+Job execBackground(Command cmd)
+{
+  Job job = {0};
+  job.status = -1;
+  job.pid = -1;
+  job.groupPid = -1;
 
+  Pgm *programList = cmd.pgm;
+  if (!programList || !programList->pgmlist || !programList->pgmlist[0])
+  {
+    job.status = 0; // nothing to do
+    return job;
+  }
+
+  int inFd = -1;
+  int outFd = -1;
+
+  // imtput redirection (<)
+  if (cmd.rstdin)
+  {
+    inFd = open(cmd.rstdin, O_RDONLY);
+    if (inFd == -1)
+    {
+      perror("open rstdin failed");
+      return job;
+    }
+  }
+  // output redirection (>)
+  if (cmd.rstdout)
+  {
+    outFd = open(cmd.rstdout, O_WRONLY | O_CREAT | O_TRUNC, 0666);
+    if (outFd == -1)
+    {
+      perror("open rstdout failed");
+      if (inFd != -1)
+        close(inFd);
+      return job;
+    }
+  }
+
+  pid_t pid = forkAndExec(programList, inFd, outFd);
+
+  if (inFd != -1)
+    close(inFd);
+  if (outFd != -1)
+    close(outFd);
+
+  if (pid == -1)
+  {
+    return job;
+  }
+
+  (void)setpgid(pid, pid);
+
+  job.pid = pid;
+  job.groupPid = pid;
+  job.status = 0;
+  return job;
 }
 
 /*
- * Given the program it will fork and execute it and return the PID 
+ * Given the program it will fork and execute it and return the PID
  *
  * Parameters:
  * program: contains the program name and args
@@ -165,34 +260,41 @@ Job execBackground(Command cmd){
  * Return value:
  * returns pid of the child and -1 if failed
  */
-pid_t forkAndExec(Pgm *program, int readFd, int writeFd) {
+pid_t forkAndExec(Pgm *program, int readFd, int writeFd)
+{
   assert(program != NULL);
 
   pid_t pid;
 
   pid = fork();
-  if (pid == -1) {
+  if (pid == -1)
+  {
     perror("Fork failed");
     return -1;
+
   } else if (pid == 0) { //child
     // dont let child manage its process group it creates race conditon in pipes
     //(void)setpgid(0, 0); 
-
+    
     // Default SIGINT handling so Ctrl-C terminates the child
     (void)signal(SIGINT, SIG_DFL);
     (void)signal(SIGTSTP, SIG_DFL);
 
     // Child: wire provided FDs to STDIN/STDOUT using dup2 when present
-    if (readFd != -1){
-      if (dup2(readFd, STDIN_FILENO) == -1){
+    if (readFd != -1)
+    {
+      if (dup2(readFd, STDIN_FILENO) == -1)
+      {
         perror("dup2 stdin failed");
         _exit(126);
       }
       (void)close(readFd);
     }
 
-    if (writeFd != -1){
-      if (dup2(writeFd, STDOUT_FILENO) == -1){
+    if (writeFd != -1)
+    {
+      if (dup2(writeFd, STDOUT_FILENO) == -1)
+      {
         perror("dup2 stdout failed");
         _exit(126);
       }
@@ -202,7 +304,9 @@ pid_t forkAndExec(Pgm *program, int readFd, int writeFd) {
     execvp(program->pgmlist[0], program->pgmlist);
     perror("execvp failed"); // will only run this when execvp fails
     _exit(127);
-  } else { //parent does not wait because it depends on what the caller wants to do
+  }
+  else
+  { // parent does not wait because it depends on what the caller wants to do
     return pid;
   }
 }
@@ -291,11 +395,91 @@ Job connectPipe(Command cmd){
   return j;
 }
 
-//returns void because built in commands do not fork and excec hence no jobs created
-void execBuiltin(Command cmd){
+// returns void because built in commands do not fork and excec hence no jobs created
+void execBuiltin(Command cmd)
+{
+  char **argv = first_argv(&cmd);
+  if (!argv || !argv[0])
+  {
+    return;
+  }
+  // exit: exit the shell
+  if (strcmp(argv[0], "exit") == 0)
+  {
+    exit(0);
+  }
+  // cd: change current directory
+  if (strcmp(argv[0], "cd") == 0)
+  {
+    const char *target = NULL;
 
+    // no argument or ~ : go to home directory
+    if (!argv[1] || strcmp(argv[1], "~") == 0)
+    {
+      target = getenv("HOME");
+      if (!target)
+        target = "/";
+    }
+    else if (strcmp(argv[1], "-") == 0)
+    {
+      const char *oldpwd = getenv("OLDPWD");
+      if (!oldpwd)
+      {
+        fprintf(stderr, "cd: OLDPWD not set\n");
+        return;
+      }
+      target = oldpwd;
+    }
+    else
+    {
+      target = argv[1];
+    }
+
+    char *prev = getcwd(NULL, 0);
+
+    if (chdir(target) != 0)
+    {
+      fprintf(stderr, "cd: %s: %s\n", target, strerror(errno));
+      if (prev)
+        free(prev);
+      return;
+    }
+
+    if (prev)
+    {
+      setenv("OLDPWD", prev, 1);
+      free(prev);
+    }
+    char *now = getcwd(NULL, 0);
+    if (now)
+    {
+      setenv("PWD", now, 1);
+      free(now);
+    }
+    return;
+  }
 }
 
-int isBuiltin(Command cmd){
+// checks if the command is a built-in command
+// no pipeline and first argument is either cd or exit
+int isBuiltin(Command cmd)
+{
+  if (has_pipeline(&cmd))
+  {
+    return 0;
+  }
+  char **argv = first_argv(&cmd);
+  if (!argv || !argv[0])
+  {
+    return 0;
+  }
+  if (strcmp(argv[0], "cd") == 0)
+  {
+    return 1;
+  }
+  else if (strcmp(argv[0], "exit") == 0)
+  {
+    return 1;
+  }
   return 0;
 }
