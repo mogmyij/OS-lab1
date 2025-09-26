@@ -125,7 +125,7 @@ Job execForeground(Command cmd)
     }
     else
     {
-      // Put child into its own process group
+      // Put child into its own process group and hand it shell
       (void)setpgid(pid, pid);
       (void)tcsetpgrp(STDIN_FILENO, pid);
       set_current_foreground_pgid(pid);

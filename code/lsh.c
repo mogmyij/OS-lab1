@@ -59,7 +59,7 @@ static void on_sigint(int signo)
   }
   else
   {
-    const char nl[2] = {'\n','>'}; // include the ">" otherwise ctrl-c prints an empty new line
+    const char nl[2] = {'\n','>'};
     (void)!write(STDOUT_FILENO, &nl, 2);
   }
 }
